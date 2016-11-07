@@ -216,6 +216,14 @@ sub cluster_fe_backend_fetch {
 }
 <% end -%>
 
+C{
+        #include <stdlib.h>
+        #include <math.h>
+
+        const int adm_param = 32768;
+}C
+
+
 sub cluster_fe_backend_response {
 	call text_common_backend_response;
 
@@ -223,20 +231,19 @@ sub cluster_fe_backend_response {
 	// translates TTL<=0 responses into hit-for-pass!  That code is
 	// currently in wikimedia-common's backend_response, which is implicitly
 	// ahead of this subroutine.
-	// Four-hit-wonder experiment: if the immediate backend does not indicate
-	// hit/4 or higher, deliver the object as normal but do not create a new
-	// cache entry of any kind.  We start caching in the frontend when an
-	// object is accessed for the 5th time across all frontends in this DC.
 	if (beresp.status == 200
-            && bereq.http.X-CDIS == "miss"
-            && beresp.http.X-Cache-Int !~ " hit/([4-9]|[0-9]{2,})$") {
-		set beresp.ttl = 0s;
-		<%- if @varnish_version4 -%>
-		set beresp.uncacheable = true;
-		return (deliver);
-		<%- else -%>
-		return (hit_for_pass);
-		<%- end -%>
+            && bereq.http.X-CDIS == "miss") {
+	        C{
+			const struct gethdr_s hdr = { HDR_BERESP, "\017Content-Length:" };
+        		const int clen = atoi(VRT_GetHdr(ctx, &hdr));
+        		const double admissionprob = exp(-clen/ adm_param);
+        		const double urand = drand48();
+        		// if admission test suceeds, mark as uncacheable (set ttl=0, so do not create hit-for-pass)
+        		if(admissionprob < urand) {
+           		   VRT_l_beresp_ttl(ctx,0);
+           		   VRT_l_beresp_uncacheable(ctx,1);
+        		}
+    		}C
 	}
 
 	return (deliver);
